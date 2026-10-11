@@ -38,8 +38,17 @@ export function OtaPanel({
   const versions = listing.data?.versions ?? [];
 
   useEffect(() => {
-    if (!selected && versions.length > 0) setSelected(versions[0].version);
+    if (versions.length > 0 && !versions.some((v) => v.version === selected))
+      setSelected(versions[0].version);
   }, [versions, selected]);
+
+  // Re-render every 30 s so "no word from the device" appears without another update arriving.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    const timer = setInterval(() => setTick((t) => t + 1), 30_000);
+    return () => clearInterval(timer);
+  }, [active]);
 
   useEffect(() => {
     if (!active || state?.phase === 'awaiting_approval') return;

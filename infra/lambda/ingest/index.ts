@@ -1,4 +1,5 @@
 import { broadcast } from '../shared/connections';
+import { publishCommand } from '../shared/mqtt';
 import { getEntry, updateEntry } from '../shared/registry';
 import type { OtaPhase, OtaState, RegistryEntry } from '../shared/types';
 
@@ -7,13 +8,18 @@ import type { OtaPhase, OtaState, RegistryEntry } from '../shared/types';
  * currentVersion and otaState current, then forwards the message to every open Fleet UI.
  */
 export interface DeviceMessage {
-  project: string;
-  deviceId: string;
-  channel: 'responses' | 'status';
+  // From the topic (aliased in the IoT rule so a device's own "project" field can't clash).
+  topicProject: string;
+  topicDeviceId: string;
+  topicChannel: 'responses' | 'status';
   receivedAt?: number;
   type?: string;
   [key: string]: unknown;
 }
+
+const TOPIC_FIELDS = ['topicProject', 'topicDeviceId', 'topicChannel', 'receivedAt'];
+export const payloadOf = (message: DeviceMessage) =>
+  Object.fromEntries(Object.entries(message).filter(([k]) => !TOPIC_FIELDS.includes(k)));
 
 const OTA_STATUSES: Record<string, OtaPhase> = {
   awaiting_approval: 'awaiting_approval',
@@ -49,11 +55,8 @@ export function otaStateFrom(message: DeviceMessage, previous: OtaState | undefi
 export function registryUpdate(message: DeviceMessage, existing: RegistryEntry | undefined, at: string): Partial<RegistryEntry> {
   const update: Partial<RegistryEntry> = { lastSeen: at };
   // A device publishing under a project is the best evidence of its project; don't override an edited one.
-  if (!existing?.project) update.project = message.project;
-  if (message.channel === 'status') {
-    const { project: _p, deviceId: _d, channel: _c, receivedAt: _r, ...status } = message;
-    update.lastStatus = status;
-  }
+  if (!existing?.project) update.project = message.topicProject;
+  if (message.topicChannel === 'status') update.lastStatus = payloadOf(message);
   if ((message.type === 'version' || message.type === 'ota_complete') && typeof message.version === 'string') {
     update.currentVersion = message.version;
   }
@@ -62,13 +65,25 @@ export function registryUpdate(message: DeviceMessage, existing: RegistryEntry |
   return update;
 }
 
+const POLLED_PHASES = new Set(['requested', 'in_progress', 'approved']);
+
 export const handler = async (message: DeviceMessage): Promise<void> => {
-  if (!message?.deviceId || !message.project) {
+  const { topicProject: project, topicDeviceId: deviceId, topicChannel: channel } = message ?? {};
+  if (!deviceId || !project) {
     console.warn('Ignoring message without topic metadata', message);
     return;
   }
   const at = new Date(message.receivedAt ?? Date.now()).toISOString();
-  const existing = await getEntry(message.deviceId);
-  const device = await updateEntry(message.deviceId, registryUpdate(message, existing, at));
-  await broadcast({ type: 'deviceMessage', deviceId: message.deviceId, project: message.project, channel: message.channel, message, device });
+  const existing = await getEntry(deviceId);
+  const device = await updateEntry(deviceId, registryUpdate(message, existing, at));
+
+  // Devices reboot into new firmware rather than sending ota_complete. A heartbeat during an update means
+  // the device is up again, so ask which version it is running.
+  if (channel === 'status' && device.otaState && POLLED_PHASES.has(device.otaState.phase)) {
+    await publishCommand(project, deviceId, { command: 'get_version' }).catch((err) =>
+      console.warn(`get_version to ${deviceId} failed`, err),
+    );
+  }
+
+  await broadcast({ type: 'deviceMessage', deviceId, project, channel, message: payloadOf(message), device });
 };

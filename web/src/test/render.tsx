@@ -36,7 +36,12 @@ export function fakeLive() {
     },
     onStatus: () => () => {},
   } as unknown as LiveUpdates;
-  return { live, emit: (e: DeviceMessageEvent) => listeners.forEach((l) => l(e)) };
+  return {
+    live,
+    emit: (e: DeviceMessageEvent) => {
+      for (const l of listeners) l(e);
+    },
+  };
 }
 
 export function renderFleet(

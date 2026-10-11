@@ -133,10 +133,39 @@ describe('POST /devices/{id}/ota', () => {
   });
 });
 
-test('cancel publishes ota_cancel', async () => {
+test('cancel publishes ota_cancel and waits for the device to confirm', async () => {
+  ddb.on(GetCommand).resolves({ Item: { deviceId: 'BootBootsThing', otaState: { phase: 'in_progress', updatedAt: 't' } } });
   const res = parse(await handler(apiEvent('POST /devices/{id}/ota/cancel', { pathParameters: { id: 'BootBootsThing' } })));
   expect(res.status).toBe(202);
+  expect(res.body.otaState).toMatchObject({ phase: 'in_progress', status: 'Cancel requested' });
   expect(published()).toEqual([{ topic: 'bootboots/BootBootsThing/commands', payload: { command: 'ota_cancel' } }]);
+});
+
+test('records the OTA request before publishing, so a fast device ack is not overwritten', async () => {
+  const order: string[] = [];
+  ddb.on(UpdateCommand).callsFake(async () => {
+    order.push('update');
+    return { Attributes: {} };
+  });
+  iotData.on(PublishCommand).callsFake(async () => {
+    order.push('publish');
+    return {};
+  });
+  await handler(apiEvent('POST /devices/{id}/ota', { pathParameters: { id: 'BootBootsThing' }, body: { version: '1.0.331' } }));
+  expect(order).toEqual(['update', 'publish']);
+});
+
+test('devices without a project are refused', async () => {
+  iot.on(DescribeThingCommand, { thingName: 'MushroomThing' }).resolves({ attributes: {} });
+  const ota = parse(await handler(apiEvent('POST /devices/{id}/ota', { pathParameters: { id: 'MushroomThing' }, body: { version: '1.0.0' } })));
+  const cmd = parse(await handler(apiEvent('POST /devices/{id}/command', { pathParameters: { id: 'MushroomThing' }, body: { command: 'ping' } })));
+  expect([ota.status, cmd.status]).toEqual([409, 409]);
+  expect(published()).toHaveLength(0);
+});
+
+test('commands too big for the device buffer are refused', async () => {
+  const res = parse(await handler(apiEvent('POST /devices/{id}/command', { pathParameters: { id: 'BootBootsThing' }, body: { command: 'x', blob: 'y'.repeat(1600) } })));
+  expect(res.status).toBe(413);
 });
 
 describe('POST /devices/{id}/command', () => {
@@ -194,8 +223,15 @@ describe('PUT /devices/{id}', () => {
   });
 });
 
+test('wipe is refused for devices that cannot wipe', async () => {
+  const res = parse(await handler(apiEvent('POST /devices/{id}/wipe', { pathParameters: { id: 'BootBootsThing' }, body: { project: 'kappawarmer' } })));
+  expect(res.status).toBe(409);
+  expect(published()).toHaveLength(0);
+});
+
 test('wipe sends wipe on the old topic and moves the device', async () => {
   iot.on(UpdateThingCommand).resolves({});
+  ddb.on(GetCommand).resolves({ Item: { deviceId: 'BootBootsThing', capabilities: ['wipe'] } });
 
   const res = parse(await handler(apiEvent('POST /devices/{id}/wipe', { pathParameters: { id: 'BootBootsThing' }, body: { project: 'kappawarmer' } })));
 

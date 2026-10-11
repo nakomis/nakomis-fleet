@@ -45,7 +45,18 @@ export function DevicePage() {
     id,
   );
 
-  const onDeviceChange = useCallback((d: Device) => setData(d), [setData]);
+  // An API response can arrive after a newer live update from the device; keep whichever OTA state is newer.
+  const onDeviceChange = useCallback(
+    (d: Device) =>
+      setData((current) => {
+        const mine = current?.otaState?.updatedAt;
+        const theirs = d.otaState?.updatedAt;
+        return mine && theirs && Date.parse(mine) > Date.parse(theirs)
+          ? { ...d, otaState: current.otaState }
+          : d;
+      }),
+    [setData],
+  );
 
   return (
     <Box>

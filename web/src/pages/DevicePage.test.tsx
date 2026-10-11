@@ -93,8 +93,13 @@ test('saves settings, splitting capabilities', async () => {
   expect(await screen.findByText('Saved')).toBeInTheDocument();
 });
 
+test('wipe is only offered to devices that can wipe', async () => {
+  setup();
+  expect(await screen.findByRole('button', { name: 'Wipe and re-purpose…' })).toBeDisabled();
+});
+
 test('wipes and re-purposes', async () => {
-  const { api } = setup();
+  const { api } = setup({ getDevice: vi.fn(async () => ({ ...device, capabilities: ['wipe'] })) });
   await userEvent.click(await screen.findByRole('button', { name: 'Wipe and re-purpose…' }));
   const dialog = await screen.findByRole('dialog');
   await userEvent.type(within(dialog).getByLabelText('New project'), 'kappawarmer');

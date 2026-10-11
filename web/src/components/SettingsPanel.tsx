@@ -125,7 +125,16 @@ export function SettingsPanel({
           <Button variant="contained" onClick={() => void save()} disabled={saving || !form.project.trim()}>
             Save
           </Button>
-          <Button color="error" onClick={() => setWipeOpen(true)}>
+          <Button
+            color="error"
+            onClick={() => setWipeOpen(true)}
+            disabled={!device.capabilities.includes('wipe')}
+            title={
+              device.capabilities.includes('wipe')
+                ? undefined
+                : 'This device does not advertise the wipe capability'
+            }
+          >
             Wipe and re-purpose…
           </Button>
         </Box>

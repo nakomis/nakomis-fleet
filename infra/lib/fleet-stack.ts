@@ -64,7 +64,14 @@ export class FleetStack extends cdk.Stack {
     });
 
     // ── Lambdas ────────────────────────────────────────────────────────────
-    const fn = (name: string, entry: string, handler: string, environment: Record<string, string>, role?: iam.IRole) => {
+    const fn = (
+      name: string,
+      entry: string,
+      handler: string,
+      environment: Record<string, string>,
+      role?: iam.IRole,
+      reservedConcurrentExecutions?: number,
+    ) => {
       const functionName = `nakomis-fleet-${name}-${deployEnv}`;
       return new lambdaNode.NodejsFunction(this, `${name}Function`, {
         functionName,
@@ -76,6 +83,7 @@ export class FleetStack extends cdk.Stack {
         timeout: cdk.Duration.seconds(30),
         environment: { DEPLOY_ENV: deployEnv, ...environment },
         role,
+        reservedConcurrentExecutions,
         logGroup: new logs.LogGroup(this, `${name}Logs`, {
           logGroupName: `/aws/lambda/${functionName}`,
           retention: logs.RetentionDays.THREE_MONTHS,
@@ -139,7 +147,7 @@ export class FleetStack extends cdk.Stack {
       // Promotion copies sandbox builds in; the sandbox bucket policy grants this role read access.
       api.addToRolePolicy(
         new iam.PolicyStatement({
-          actions: ['s3:PutObject'],
+          actions: ['s3:PutObject', 's3:PutObjectTagging'],
           resources: [`arn:aws:s3:::${firmwareBucket}/*`],
         }),
       );
@@ -208,20 +216,29 @@ export class FleetStack extends cdk.Stack {
     });
 
     // ── Ingest: device responses and status → registry + WebSocket ────────
+    // One at a time: each message is a read-modify-write of the device's OTA state.
     const ingest = fn('ingest', 'ingest/index.ts', 'handler', {
       DEVICES_TABLE: devices.tableName,
       CONNECTIONS_TABLE: connections.tableName,
       WS_MANAGEMENT_ENDPOINT: wsStage.callbackUrl,
-    });
+    }, undefined, 1);
     devices.grantReadWriteData(ingest);
     connections.grantReadWriteData(ingest);
     wsStage.grantManagementApiAccess(ingest);
+    // Asks devices that come back mid-update which version they're running.
+    ingest.addToRolePolicy(new iam.PolicyStatement({ actions: ['iot:DescribeEndpoint'], resources: ['*'] }));
+    ingest.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['iot:Publish'],
+        resources: [`arn:aws:iot:${this.region}:${this.account}:topic/*/*/commands`],
+      }),
+    );
 
     for (const channel of ['responses', 'status']) {
       const rule = new iot.CfnTopicRule(this, `Ingest${channel}Rule`, {
         ruleName: `nakomis_fleet_${channel}_${deployEnv}`,
         topicRulePayload: {
-          sql: `SELECT *, topic(1) AS project, topic(2) AS deviceId, topic(3) AS channel, timestamp() AS receivedAt FROM '+/+/${channel}'`,
+          sql: `SELECT *, topic(1) AS topicProject, topic(2) AS topicDeviceId, topic(3) AS topicChannel, timestamp() AS receivedAt FROM '+/+/${channel}'`,
           awsIotSqlVersion: '2016-03-23',
           ruleDisabled: false,
           actions: [{ lambda: { functionArn: ingest.functionArn } }],

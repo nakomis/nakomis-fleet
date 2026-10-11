@@ -31,6 +31,16 @@ async function requireDevice(event: Event): Promise<Device> {
   return device;
 }
 
+/** Devices without a project have no command topic anything listens on. */
+function requireAssigned(device: Device) {
+  if (device.project === 'unassigned') {
+    throw new HttpError(409, `${device.deviceId} has no project yet; set one in its settings first`);
+  }
+}
+
+// Leaves room for the topic inside the device's 2 KB MQTT buffer.
+const MAX_COMMAND_BYTES = 1500;
+
 async function requireFirmwareProject(device: Device): Promise<string> {
   const firmwareProject = await resolveFirmwareProject(device.project, device.firmwareProject);
   if (!firmwareProject) throw new HttpError(404, `No firmware published for project ${device.project}`);
@@ -45,6 +55,7 @@ export function eligibleVersions(device: Device, manifest: Manifest | undefined)
 
 async function startOta(event: Event): Promise<APIGatewayProxyResultV2> {
   const device = await requireDevice(event);
+  requireAssigned(device);
   const { version: rawVersion } = parseBody<{ version?: string }>(event.body, event.isBase64Encoded);
   const version = assertVersion(rawVersion);
   if (device.hwType === 'pi' && !hasCapability(device, 'ota')) {
@@ -57,11 +68,14 @@ async function startOta(event: Event): Promise<APIGatewayProxyResultV2> {
   }
 
   const url = await presignFirmware(entry);
-  for (const message of otaMessages(url, version)) {
-    await publishCommand(device.project, device.deviceId, message);
-  }
+  const messages = otaMessages(url, version);
+  // Record the request before publishing: the device acknowledges at once, and its ota_progress must not be
+  // overwritten by a late "requested".
   const otaState: OtaState = { phase: 'requested', targetVersion: version, updatedAt: now() };
   await updateEntry(device.deviceId, { otaState, project: device.project });
+  for (const message of messages) {
+    await publishCommand(device.project, device.deviceId, message);
+  }
   return json(202, {
     deviceId: device.deviceId,
     otaState,
@@ -73,9 +87,16 @@ async function startOta(event: Event): Promise<APIGatewayProxyResultV2> {
 
 async function cancelOta(event: Event): Promise<APIGatewayProxyResultV2> {
   const device = await requireDevice(event);
+  requireAssigned(device);
   await publishCommand(device.project, device.deviceId, { command: 'ota_cancel' });
-  const otaState: OtaState = { ...device.otaState, phase: 'cancelled', updatedAt: now() };
-  await updateEntry(device.deviceId, { otaState });
+  // The device confirms with ota_progress "Update cancelled"; until then the update may still be running
+  // (MQTT is often paused mid-download).
+  const otaState: OtaState | undefined = device.otaState && {
+    ...device.otaState,
+    status: 'Cancel requested',
+    updatedAt: now(),
+  };
+  if (otaState) await updateEntry(device.deviceId, { otaState });
   return json(202, { deviceId: device.deviceId, otaState });
 }
 
@@ -84,6 +105,8 @@ async function sendCommand(event: Event): Promise<APIGatewayProxyResultV2> {
   const body = parseBody<Record<string, unknown>>(event.body, event.isBase64Encoded);
   if (typeof body.command !== 'string' || !body.command) throw new HttpError(400, 'command is required');
   if (RESERVED_COMMANDS.has(body.command)) throw new HttpError(400, `Use the OTA endpoint for ${body.command}`);
+  if (JSON.stringify(body).length > MAX_COMMAND_BYTES) throw new HttpError(413, 'Command too large for the device');
+  requireAssigned(device);
   await publishCommand(device.project, device.deviceId, body);
   return json(202, { deviceId: device.deviceId, sent: body });
 }
@@ -137,6 +160,10 @@ async function wipeDevice(event: Event): Promise<APIGatewayProxyResultV2> {
   const device = await requireDevice(event);
   const { project } = parseBody<{ project?: string }>(event.body, event.isBase64Encoded);
   const newProject = assertId(project, 'project');
+  // A device that can't wipe would keep listening on its old topic and become unreachable once moved.
+  if (!hasCapability(device, 'wipe')) {
+    throw new HttpError(409, `${device.deviceId} doesn't support wipe; re-provision it, then change its project in Settings`);
+  }
   // Sent on the old topic: that's the one the device is listening on.
   await publishCommand(device.project, device.deviceId, { command: 'wipe', project: newProject });
   await updateEntry(device.deviceId, {
