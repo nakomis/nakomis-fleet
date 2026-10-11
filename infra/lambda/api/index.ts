@@ -68,7 +68,7 @@ async function startOta(event: Event): Promise<APIGatewayProxyResultV2> {
   }
 
   const url = await presignFirmware(entry);
-  const messages = otaMessages(url, version);
+  const messages = otaMessages(url, version, entry.sha256);
   // Record the request before publishing: the device acknowledges at once, and its ota_progress must not be
   // overwritten by a late "requested".
   const otaState: OtaState = { phase: 'requested', targetVersion: version, updatedAt: now() };

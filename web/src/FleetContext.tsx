@@ -1,4 +1,4 @@
-import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createFleetApi, type FleetApi } from './api/client';
 import type { DeviceMessageEvent } from './api/types';
 import { type LiveStatus, LiveUpdates } from './hooks/liveUpdates';
@@ -23,14 +23,19 @@ export function FleetProvider({
   api?: FleetApi;
   live?: LiveUpdates;
 }) {
-  const value = useMemo(
-    () => ({
-      shell,
-      api: apiOverride ?? createFleetApi(shell),
-      live: liveOverride ?? new LiveUpdates(shell.env, shell.getAccessToken),
-    }),
-    [shell, apiOverride, liveOverride],
-  );
+  // The shell may hand us a new props object on every render; keep the API client and WebSocket stable and
+  // always reach the latest token getter through a ref.
+  const shellRef = useRef(shell);
+  shellRef.current = shell;
+  const env = shell.env;
+  const services = useMemo(() => {
+    const getAccessToken = () => shellRef.current.getAccessToken();
+    return {
+      api: apiOverride ?? createFleetApi({ env, getAccessToken }),
+      live: liveOverride ?? new LiveUpdates(env, getAccessToken),
+    };
+  }, [env, apiOverride, liveOverride]);
+  const value = useMemo(() => ({ shell, ...services }), [shell, services]);
 
   useEffect(() => {
     value.live.start();

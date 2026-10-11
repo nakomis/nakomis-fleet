@@ -65,8 +65,24 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
 
+  agent:
+    name: Agent
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.CHECKOUT_REF }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - run: pip install -e ".[test]"
+      - run: pytest
+
   deploy-infra-sandbox:
-    needs: [web, infra]
+    needs: [web, infra, agent]
     if: github.event_name != 'pull_request'
     uses: nakomis/nakomis-workflows/.github/workflows/cdk-deploy.yml@main
     with:

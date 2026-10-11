@@ -149,3 +149,9 @@ PLAN.md
 cdk.out/
 *.out/
 lcov.info
+
+# Python
+__pycache__/
+*.egg-info/
+.venv/
+.coverage

@@ -1,0 +1,14 @@
+[Unit]
+Description=nakomis-fleet agent (OTA releases over the Fleet MQTT protocol)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/opt/nakomis-fleet-agent/venv/bin/nakomis-fleet-agent --config /etc/nakomis-fleet-agent/config.toml
+Restart=always
+RestartSec=10
+# Root, because it swaps release symlinks under /opt/<project> and restarts the managed unit.
+User=root
+
+[Install]
+WantedBy=multi-user.target

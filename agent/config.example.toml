@@ -1,0 +1,17 @@
+# /etc/nakomis-fleet-agent/config.toml
+endpoint = "xxxxxxxxxxxxxx-ats.iot.eu-west-2.amazonaws.com"   # aws iot describe-endpoint --endpoint-type iot:Data-ATS
+thing_name = "pish-sandbox"          # IoT Thing name = Fleet deviceId
+project = "pish"                     # MQTT topic prefix and the Thing's project attribute
+ca_file = "/etc/nakomis-fleet-agent/AmazonRootCA1.pem"
+cert_file = "/etc/nakomis-fleet-agent/certificate.pem.crt"
+key_file = "/etc/nakomis-fleet-agent/private.pem.key"
+
+install_dir = "/opt/pish"            # releases/<version>/ and the current symlink live here
+service = "pish.service"             # the unit that runs from /opt/pish/current
+keep_releases = 3
+status_interval = 60
+
+[healthcheck]                        # optional; a release's fleet.json can override it
+# command = ["/opt/pish/current/bin/pish", "--self-test"]
+timeout_seconds = 30
+settle_seconds = 5

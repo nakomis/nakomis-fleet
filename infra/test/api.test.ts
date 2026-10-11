@@ -86,7 +86,7 @@ describe('POST /devices/{id}/ota', () => {
     expect(published()).toEqual([
       {
         topic: 'bootboots/BootBootsThing/commands',
-        payload: { command: 'ota_update', url: 'https://bucket.s3.amazonaws.com/BootBoots/1.0.331/firmware.bin?X-Amz-Signature=sig', version: '1.0.331' },
+        payload: { command: 'ota_update', url: 'https://bucket.s3.amazonaws.com/BootBoots/1.0.331/firmware.bin?X-Amz-Signature=sig', version: '1.0.331', sha256: 'aa' },
       },
     ]);
   });

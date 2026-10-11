@@ -21,6 +21,8 @@ const TOPIC_FIELDS = ['topicProject', 'topicDeviceId', 'topicChannel', 'received
 export const payloadOf = (message: DeviceMessage) =>
   Object.fromEntries(Object.entries(message).filter(([k]) => !TOPIC_FIELDS.includes(k)));
 
+const TERMINAL_PHASES = new Set<OtaPhase>(['complete', 'error', 'rolled_back', 'cancelled']);
+
 const OTA_STATUSES: Record<string, OtaPhase> = {
   awaiting_approval: 'awaiting_approval',
   approved: 'approved',
@@ -30,6 +32,9 @@ export function otaStateFrom(message: DeviceMessage, previous: OtaState | undefi
   const targetVersion = (message.version as string | undefined) ?? previous?.targetVersion;
   switch (message.type) {
     case 'ota_progress': {
+      // URL-chunk acks carry no version and can be delivered after the update has finished; they must not
+      // reopen a finished update.
+      if (message.version === undefined && previous && TERMINAL_PHASES.has(previous.phase)) return undefined;
       const status = typeof message.status === 'string' ? message.status : undefined;
       const phase: OtaPhase =
         (status ? OTA_STATUSES[status] : undefined) ?? (status === 'Update cancelled' ? 'cancelled' : 'in_progress');

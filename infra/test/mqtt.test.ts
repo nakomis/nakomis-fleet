@@ -16,3 +16,10 @@ test('long URLs are split into url_chunk messages that reassemble', () => {
 test('refuses URLs the device could not reassemble', () => {
   expect(() => otaMessages(`https://x/${'a'.repeat(URL_CHUNK_SIZE * MAX_URL_CHUNKS)}`, '1.0.0')).toThrow(/too long/);
 });
+
+test('sha256 rides on the single message, or on the last chunk', () => {
+  expect(otaMessages('https://x/fw.bin', '1.0.0', 'ab')).toEqual([{ command: 'ota_update', url: 'https://x/fw.bin', version: '1.0.0', sha256: 'ab' }]);
+  const chunks = otaMessages(`https://x/${'t'.repeat(1500)}`, '1.0.0', 'ab');
+  expect(chunks[chunks.length - 1]).toMatchObject({ sha256: 'ab' });
+  expect(chunks[0]).not.toHaveProperty('sha256');
+});

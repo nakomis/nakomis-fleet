@@ -39,6 +39,12 @@ describe('otaStateFrom', () => {
     expect(otaStateFrom(msg(fields), { phase: 'requested', targetVersion: '1.2.3', updatedAt: AT }, AT)).toMatchObject(expected);
   });
 
+  test('late chunk acks cannot reopen a finished update', () => {
+    const done = { phase: 'complete' as const, targetVersion: '1.2.3', updatedAt: AT };
+    expect(otaStateFrom(msg({ type: 'ota_progress', progress: 0, status: 'Chunk 1/4 received' }), done, AT)).toBeUndefined();
+    expect(otaStateFrom(msg({ type: 'ota_progress', progress: 0, status: 'Starting', version: '1.2.4' }), done, AT)).toMatchObject({ phase: 'in_progress' });
+  });
+
   test('reaching the target version completes an update (devices reboot instead of sending ota_complete)', () => {
     const previous = { phase: 'in_progress' as const, targetVersion: '1.2.3', updatedAt: AT };
     expect(otaStateFrom(msg({ type: 'version', version: '1.2.3' }), previous, AT)).toMatchObject({ phase: 'complete' });
