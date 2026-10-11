@@ -144,3 +144,8 @@ vite.config.ts.timestamp-*
 
 # Planning
 PLAN.md
+
+# CDK
+cdk.out/
+*.out/
+lcov.info
