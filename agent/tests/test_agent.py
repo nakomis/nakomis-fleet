@@ -70,6 +70,7 @@ def test_simple_commands(agent):
     send(a, command="bogus")
     a.handle(b"not json")
     assert [m["type"] for _, m in pub.messages] == ["pong", "version", "status", "reboot_ack", "error", "error"]
+    assert "reboot_ack" in [m["type"] for _, m in pub.messages]
 
 
 def test_bad_ota_requests(agent):
@@ -90,3 +91,51 @@ def test_heartbeat_goes_to_status_topic(agent):
     topic, body = pub.messages[0]
     assert topic == "pish/pish-1/status"
     assert body["version"] is None and body["updating"] is False
+
+
+def test_out_of_order_chunks_keep_sha256_from_the_last_chunk(agent, serve):
+    a, pub = agent
+    a.config.require_sha256 = True
+    data = make_tarball({"x": "y"})
+    serve[URL] = data
+    parts = [URL[i : i + 40] for i in range(0, len(URL), 40)]
+    order = list(range(len(parts)))
+    order = order[-1:] + order[:-1]  # last chunk (with sha256) first
+    for i in order:
+        extra = {"sha256": sha(data)} if i == len(parts) - 1 else {}
+        send(a, command="url_chunk", chunk_index=i, total_chunks=len(parts), chunk_data=parts[i], version="1.0.0", **extra)
+    wait(a)
+    assert pub.of_type("ota_complete")
+
+
+def test_sha256_is_required_by_default(agent):
+    a, pub = agent
+    a.config.require_sha256 = True
+    send(a, command="ota_update", url=URL, version="1.0.0")
+    assert pub.of_type("ota_error")[0]["message"] == "sha256 required"
+
+
+def test_pushing_the_running_version_is_a_no_op_success(agent, serve):
+    a, pub = agent
+    serve[URL] = make_tarball({"x": "1"})
+    send(a, command="ota_update", url=URL, version="1.0.0")
+    wait(a)
+    a.worker = None
+    send(a, command="ota_update", url=URL, version="1.0.0")
+    assert len(pub.of_type("ota_complete")) == 2
+
+
+def test_handler_errors_never_escape(agent, monkeypatch):
+    a, pub = agent
+    monkeypatch.setattr(a.releases, "current_version", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    send(a, command="get_version")
+    send(a, command=["not", "a", "string"])
+    assert [m["type"] for _, m in pub.messages] == ["error", "error"]
+
+
+def test_restart_is_refused_mid_update(agent):
+    a, pub = agent
+    a._busy.acquire()
+    send(a, command="reboot")
+    a._busy.release()
+    assert pub.messages[-1][1]["message"] == "Update in progress; not restarting"

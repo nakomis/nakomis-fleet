@@ -44,7 +44,7 @@ def serve(monkeypatch):
     def urlopen(url, timeout=None):
         return FakeResponse(served[url])
 
-    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("fleet_agent.releases._open", urlopen)
     return served
 
 
@@ -83,7 +83,7 @@ class FakePublisher:
 @pytest.fixture
 def agent(tmp_path, releases):
     config = Config(endpoint="x", thing_name="pish-1", project="pish", ca_file="", cert_file="", key_file="",
-                    install_dir=str(tmp_path / "opt"), service="pish.service")
+                    install_dir=str(tmp_path / "opt"), service="pish.service", require_sha256=False)
     publisher = FakePublisher()
     return Agent(config, releases, publisher, started=0), publisher
 

@@ -75,3 +75,80 @@ def test_download_requires_https(releases, tmp_path):
 
 def test_current_version_none_before_install(releases):
     assert releases.current_version() is None
+
+
+def test_first_install_failure_leaves_nothing_current(releases, tmp_path):
+    unpack(releases, tmp_path, "1.0.0", {"x": "1"})
+    (tmp_path / "unhealthy").touch()
+    with pytest.raises(OtaError, match="no previous release"):
+        releases.install("1.0.0")
+    assert not releases.current_link.is_symlink()
+
+
+def test_any_error_after_switch_rolls_back(releases, tmp_path):
+    unpack(releases, tmp_path, "1.0.0", {"x": "1"})
+    releases.install("1.0.0")
+    unpack(releases, tmp_path, "1.1.0", {"fleet.json": '{"healthcheck": {"command": ["/no/such/binary"], "settleSeconds": 0}}'})
+    with pytest.raises(OtaError, match="rolled back"):
+        releases.install("1.1.0")
+    assert releases.current_version() == "1.0.0"
+
+
+def test_bad_fleet_json_is_refused_before_switching(releases, tmp_path):
+    unpack(releases, tmp_path, "1.0.0", {"x": "1"})
+    releases.install("1.0.0")
+    unpack(releases, tmp_path, "1.1.0", {"fleet.json": '{"healthcheck": {"command": "rm -rf /"}}'})
+    with pytest.raises(OtaError, match="Invalid fleet.json"):
+        releases.install("1.1.0")
+    assert releases.current_version() == "1.0.0"
+
+
+def test_reinstalling_the_running_version_never_deletes_it(releases, tmp_path):
+    unpack(releases, tmp_path, "1.0.0", {"x": "1"})
+    releases.install("1.0.0")
+    with pytest.raises(OtaError, match="already running"):
+        unpack(releases, tmp_path, "1.0.0", {"x": "2"})
+    assert (releases.current_link / "x").read_text() == "1"
+
+
+def test_rollback_restores_a_pre_fleet_target(releases, tmp_path):
+    legacy = tmp_path / "opt" / "app"
+    legacy.mkdir(parents=True)
+    releases.current_link.symlink_to(legacy)
+    unpack(releases, tmp_path, "1.0.0", {"x": "1"})
+    (tmp_path / "unhealthy").touch()
+    with pytest.raises(OtaError, match="rolled back"):
+        releases.install("1.0.0")
+    assert releases.current_target() == str(legacy)
+
+
+def test_recover_rolls_back_an_interrupted_unhealthy_install(releases, tmp_path):
+    unpack(releases, tmp_path, "1.0.0", {"x": "1"})
+    releases.install("1.0.0")
+    unpack(releases, tmp_path, "1.1.0", {"x": "2"})
+    # Simulate dying after the switch: marker written, current moved, no health check.
+    releases.pending_file.write_text('{"version": "1.1.0", "previous": "releases/1.0.0"}')
+    releases.switch_to("1.1.0")
+    (releases.releases_dir / ".1.2.0-stale").mkdir()
+    (tmp_path / "unhealthy").touch()
+
+    assert releases.recover() == "rolled back"
+    assert releases.current_version() == "1.0.0"
+    assert not releases.pending_file.exists()
+    assert not (releases.releases_dir / ".1.2.0-stale").exists()
+
+
+def test_recover_keeps_a_healthy_interrupted_install(releases, tmp_path):
+    unpack(releases, tmp_path, "1.0.0", {"x": "1"})
+    releases.pending_file.write_text('{"version": "1.0.0", "previous": null}')
+    releases.switch_to("1.0.0")
+    assert releases.recover() is None
+    assert releases.current_version() == "1.0.0"
+    assert releases.recover() is None
+
+
+def test_refuses_to_replace_a_real_current_directory(releases, tmp_path):
+    releases.current_link.mkdir(parents=True)
+    unpack(releases, tmp_path, "1.0.0", {"x": "1"})
+    with pytest.raises(OtaError):
+        releases.install("1.0.0")

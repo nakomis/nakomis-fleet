@@ -24,8 +24,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
+SEMVER = re.compile(r"\d+\.\d+\.\d+")
 CHUNK = 64 * 1024
+PENDING_FILE = ".pending.json"
+
+
+class _HttpsOnlyRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not newurl.startswith("https://"):
+            raise OtaError("Refusing a redirect away from HTTPS")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _open(url: str):
+    return urllib.request.build_opener(_HttpsOnlyRedirects()).open(url, timeout=60)
 
 
 def safe_extract(tar: tarfile.TarFile, dest: Path) -> None:
@@ -39,13 +51,17 @@ def safe_extract(tar: tarfile.TarFile, dest: Path) -> None:
         target = (dest / member.name).resolve()
         if not str(target).startswith(str(root) + os.sep) and target != root:
             raise tarfile.TarError(f"{member.name} escapes the release directory")
-        if member.isdev() or member.islnk():
-            raise tarfile.TarError(f"{member.name}: device files and hard links are not allowed")
+        if member.isdev() or member.islnk() or member.isfifo():
+            raise tarfile.TarError(f"{member.name}: device files, FIFOs and hard links are not allowed")
+        # Like the "data" filter: no setuid/setgid/sticky bits, and files owned by whoever extracts them.
+        member.mode &= 0o755
+        member.uid = member.gid = 0
+        member.uname = member.gname = ""
         if member.issym():
             link = (target.parent / member.linkname).resolve()
             if not str(link).startswith(str(root) + os.sep):
                 raise tarfile.TarError(f"{member.name} links outside the release directory")
-    tar.extractall(dest)  # noqa: S202 (members validated above)
+    tar.extractall(dest, numeric_owner=True)  # noqa: S202 (members validated above)
 
 
 class OtaError(Exception):
@@ -85,11 +101,19 @@ class Releases:
 
     # ── State ───────────────────────────────────────────────────────────
 
-    def current_version(self) -> str | None:
+    def current_target(self) -> str | None:
+        """The raw target of current, which may predate the agent (e.g. /opt/pish/app)."""
         try:
-            return Path(os.readlink(self.current_link)).name
+            return os.readlink(self.current_link)
         except OSError:
             return None
+
+    def current_version(self) -> str | None:
+        target = self.current_target()
+        if target is None:
+            return None
+        name = Path(target).name
+        return name if SEMVER.fullmatch(name) else None
 
     # ── Download and unpack ─────────────────────────────────────────────
 
@@ -104,7 +128,7 @@ class Releases:
         if not url.startswith("https://"):
             raise OtaError("Refusing a non-HTTPS artefact URL")
         digest = hashlib.sha256()
-        with urllib.request.urlopen(url, timeout=60) as resp, open(dest, "wb") as out:  # noqa: S310 (https checked)
+        with _open(url) as resp, open(dest, "wb") as out:
             total = int(resp.headers.get("Content-Length") or 0)
             done = 0
             last_reported = -1
@@ -124,7 +148,7 @@ class Releases:
         return digest.hexdigest()
 
     def unpack(self, archive: Path, version: str) -> Path:
-        if not SEMVER.match(version):
+        if not SEMVER.fullmatch(version):
             raise OtaError(f"Invalid version {version!r}")
         self.releases_dir.mkdir(parents=True, exist_ok=True)
         target = self.releases_dir / version
@@ -133,8 +157,13 @@ class Releases:
             with tarfile.open(archive, "r:gz") as tar:
                 safe_extract(tar, staging)
             if target.exists():
+                if version == self.current_version():
+                    raise OtaError(f"{version} is already running")
                 shutil.rmtree(target)
             staging.rename(target)
+        except OtaError:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
         except (tarfile.TarError, OSError) as err:
             shutil.rmtree(staging, ignore_errors=True)
             raise OtaError(f"Could not unpack artefact: {err}") from err
@@ -145,60 +174,135 @@ class Releases:
         meta = release / "fleet.json"
         if not meta.exists():
             return self.health
+        # Note: fleet.json comes with the release, so a release can relax its own health check.
         try:
             conf = json.loads(meta.read_text()).get("healthcheck", {})
-        except (OSError, json.JSONDecodeError):
-            return self.health
-        return HealthCheck(
-            command=conf.get("command", self.health.command),
-            timeout_seconds=float(conf.get("timeoutSeconds", self.health.timeout_seconds)),
-            settle_seconds=float(conf.get("settleSeconds", self.health.settle_seconds)),
-        )
+            command = conf.get("command", self.health.command)
+            if command is not None and not (isinstance(command, list) and all(isinstance(c, str) for c in command)):
+                raise ValueError("healthcheck.command must be a list of strings")
+            return HealthCheck(
+                command=command,
+                timeout_seconds=float(conf.get("timeoutSeconds", self.health.timeout_seconds)),
+                settle_seconds=float(conf.get("settleSeconds", self.health.settle_seconds)),
+            )
+        except (OSError, ValueError, TypeError, AttributeError) as err:
+            raise OtaError(f"Invalid fleet.json: {err}") from err
 
     # ── Switch, check, roll back ────────────────────────────────────────
 
     def switch_to(self, version: str) -> None:
+        self._point_current_at(str(Path("releases") / version))
+
+    def _point_current_at(self, target: str) -> None:
+        if self.current_link.exists() and not self.current_link.is_symlink():
+            raise OtaError(f"{self.current_link} is a real directory; make it a symlink before using Fleet updates")
         tmp = self.install_dir / ".current.tmp"
         if tmp.is_symlink() or tmp.exists():
             tmp.unlink()
-        tmp.symlink_to(Path("releases") / version)
+        tmp.symlink_to(target)
         os.replace(tmp, self.current_link)
 
     def restart(self) -> None:
         subprocess.run([self.systemctl, "restart", self.service], check=False, timeout=60)
 
     def healthy(self, health: HealthCheck) -> bool:
-        self.sleep(health.settle_seconds)
-        active = subprocess.run([self.systemctl, "is-active", "--quiet", self.service], check=False, timeout=30)
-        if active.returncode != 0:
-            return False
-        if not health.command:
-            return True
+        """Active three times in a row across the settle period (so a crash loop doesn't pass), then the command."""
         try:
+            for _ in range(3):
+                self.sleep(health.settle_seconds / 3)
+                active = subprocess.run([self.systemctl, "is-active", "--quiet", self.service], check=False, timeout=30)
+                if active.returncode != 0:
+                    return False
+            if not health.command:
+                return True
             check = subprocess.run(health.command, check=False, timeout=health.timeout_seconds, cwd=self.current_link)
-        except subprocess.TimeoutExpired:
+            return check.returncode == 0
+        except (OSError, subprocess.SubprocessError):
             return False
-        return check.returncode == 0
+
+    @property
+    def pending_file(self) -> Path:
+        return self.install_dir / PENDING_FILE
 
     def install(self, version: str) -> None:
-        """Switch to an unpacked release; roll back and raise if it isn't healthy."""
-        previous = self.current_version()
-        release = self.releases_dir / version
-        self.switch_to(version)
-        self.restart()
-        if self.healthy(self.release_health(release)):
-            self.prune(protect={version, previous})
-            return
-        if previous:
-            self.switch_to(previous)
+        """Switch to an unpacked release; roll back and raise if it isn't healthy.
+
+        A pending marker records the previous target first, so an agent that dies mid-install can finish the
+        job on restart (see recover()).
+        """
+        if version == self.current_version():
+            raise OtaError(f"{version} is already running")
+        if self.current_link.exists() and not self.current_link.is_symlink():
+            raise OtaError(f"{self.current_link} is a real directory; make it a symlink before using Fleet updates")
+        health = self.release_health(self.releases_dir / version)
+        previous = self.current_target()
+        self.pending_file.write_text(json.dumps({"version": version, "previous": previous}))
+        try:
+            self.switch_to(version)
             self.restart()
-        raise OtaError("rolled back")
+            ok = self.healthy(health)
+        except Exception:  # noqa: BLE001 (anything going wrong after the switch means roll back)
+            ok = False
+        if ok:
+            self.pending_file.unlink(missing_ok=True)
+            self.prune(protect={version, self.version_of(previous)})
+            return
+        self._roll_back(previous)
+        raise OtaError("rolled back" if previous else "health check failed (no previous release to roll back to)")
+
+    @staticmethod
+    def version_of(target: str | None) -> str | None:
+        return Path(target).name if target else None
+
+    def _roll_back(self, previous: str | None) -> None:
+        try:
+            if previous:
+                self._point_current_at(previous)
+            else:
+                # First install: leave nothing pointing at the broken release.
+                if self.current_link.is_symlink():
+                    self.current_link.unlink()
+            self.restart()
+        finally:
+            self.pending_file.unlink(missing_ok=True)
+
+    def recover(self) -> str | None:
+        """On start-up: finish an install the agent died in the middle of. Returns a message to report, if any."""
+        self._sweep()
+        if not self.pending_file.exists():
+            return None
+        try:
+            pending = json.loads(self.pending_file.read_text())
+            version, previous = pending["version"], pending.get("previous")
+        except (OSError, ValueError, KeyError, TypeError):
+            self.pending_file.unlink(missing_ok=True)
+            return None
+        if self.current_version() == version:
+            try:
+                ok = self.healthy(self.release_health(self.releases_dir / version))
+            except OtaError:
+                ok = False
+            if ok:
+                self.pending_file.unlink(missing_ok=True)
+                return None
+        self._roll_back(previous)
+        return "rolled back"
+
+    def _sweep(self) -> None:
+        """Remove leftovers of an interrupted unpack or switch."""
+        if self.releases_dir.exists():
+            for p in self.releases_dir.iterdir():
+                if p.name.startswith("."):
+                    shutil.rmtree(p, ignore_errors=True)
+        tmp = self.install_dir / ".current.tmp"
+        if tmp.is_symlink():
+            tmp.unlink()
 
     def prune(self, protect: set[str | None]) -> None:
         if not self.releases_dir.exists():
             return
         versions = sorted(
-            (p for p in self.releases_dir.iterdir() if p.is_dir() and SEMVER.match(p.name)),
+            (p for p in self.releases_dir.iterdir() if p.is_dir() and SEMVER.fullmatch(p.name)),
             key=lambda p: tuple(int(x) for x in p.name.split(".")),
             reverse=True,
         )

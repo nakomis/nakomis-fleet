@@ -44,12 +44,17 @@ class Config:
     keep_releases: int = 3
     status_interval: int = 60
     systemctl: str = "systemctl"
+    # Refuse updates Fleet sends without a sha256 (Fleet always sends one for builds in its manifest).
+    require_sha256: bool = True
     healthcheck: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path) -> "Config":
         with open(path, "rb") as f:
             data = tomllib.load(f)
+        unknown = set(data) - set(cls.__dataclass_fields__)
+        if unknown:
+            raise ValueError(f"Unknown settings in {path}: {', '.join(sorted(unknown))}")
         return cls(**data)
 
 
@@ -68,6 +73,9 @@ class Agent:
         self.response_topic = f"{prefix}/responses"
         self.status_topic = f"{prefix}/status"
         self._chunks: dict[int, str] = {}
+        self._chunk_total = 0
+        self._chunk_meta: dict[str, Any] = {}
+        self._installing = False
         self._cancel = threading.Event()
         self._busy = threading.Lock()
         self.worker: threading.Thread | None = None
@@ -97,9 +105,22 @@ class Agent:
     # ── Incoming ────────────────────────────────────────────────────────
 
     def handle(self, payload: bytes) -> None:
+        # Runs on paho's network thread: never let an exception escape and kill it.
+        try:
+            self._handle(payload)
+        except Exception as err:  # noqa: BLE001
+            log.exception("Command failed")
+            try:
+                self.respond({"type": "error", "message": f"Command failed: {err}"})
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _handle(self, payload: bytes) -> None:
         try:
             message = json.loads(payload)
             command = message["command"]
+            if not isinstance(command, str):
+                raise TypeError
         except (ValueError, KeyError, TypeError):
             self.respond({"type": "error", "message": "Invalid JSON command"})
             return
@@ -121,8 +142,12 @@ class Agent:
         handler(message)
 
     def _restart_service(self, _: dict[str, Any]) -> None:
+        if self._busy.locked():
+            self.respond({"type": "error", "message": "Update in progress; not restarting"})
+            return
         self.respond({"type": "reboot_ack", "message": f"Restarting {self.config.service}"})
-        self.releases.restart()
+        # Off the network thread: systemctl can take a while.
+        threading.Thread(target=self.releases.restart, daemon=True).start()
 
     def _url_chunk(self, message: dict[str, Any]) -> None:
         try:
@@ -134,19 +159,25 @@ class Agent:
         if not (0 <= index < total <= MAX_URL_CHUNKS):
             self.respond({"type": "ota_error", "message": "Invalid chunk parameters"})
             return
-        if index == 0:
-            self._chunks = {}
+        # Chunks can arrive in any order; a different total means a new URL.
+        if total != self._chunk_total:
+            self._chunks, self._chunk_meta, self._chunk_total = {}, {}, total
         self._chunks[index] = data
-        if len(self._chunks) < total:
+        if index == total - 1:
+            # Fleet puts sha256 on the last chunk; MQTT may deliver chunks out of order.
+            self._chunk_meta = {"version": message.get("version"), "sha256": message.get("sha256")}
+        if len(self._chunks) < total or not self._chunk_meta:
             self.respond({"type": "ota_progress", "progress": 0, "status": f"Chunk {index + 1}/{total} received"})
             return
         url = "".join(self._chunks[i] for i in range(total))
-        self._chunks = {}
-        self._ota_update({"url": url, "version": message.get("version"), "sha256": message.get("sha256")})
+        meta, self._chunks, self._chunk_meta, self._chunk_total = self._chunk_meta, {}, {}, 0
+        self._ota_update({"url": url, **meta})
 
     def _ota_cancel(self, _: dict[str, Any]) -> None:
-        self._chunks = {}
-        if self._busy.locked():
+        self._chunks, self._chunk_meta, self._chunk_total = {}, {}, 0
+        if self._installing:
+            self.respond({"type": "ota_progress", "progress": 100, "status": "Installing; too late to cancel"})
+        elif self._busy.locked():
             self._cancel.set()
         else:
             self.respond({"type": "ota_progress", "progress": 0, "status": "Update cancelled"})
@@ -155,6 +186,13 @@ class Agent:
         url, version = message.get("url"), message.get("version")
         if not url or not version:
             self.respond({"type": "ota_error", "message": "No firmware URL provided"})
+            return
+        if self.config.require_sha256 and not message.get("sha256"):
+            self.respond({"type": "ota_error", "message": "sha256 required", "version": version})
+            return
+        if str(version) == self.releases.current_version():
+            self.respond({"type": "ota_complete", "version": version})
+            self.announce_version()
             return
         if not self._busy.acquire(blocking=False):
             self.respond({"type": "ota_error", "message": "Update already in progress"})
@@ -166,6 +204,21 @@ class Agent:
         self.worker.start()
 
     def _run_update(self, url: str, version: str, sha256: str | None) -> None:
+        marker = self._updating_marker()
+        try:
+            marker.touch()
+        except OSError:
+            pass
+        try:
+            self._update(url, version, sha256)
+        finally:
+            marker.unlink(missing_ok=True)
+
+    def _updating_marker(self) -> Path:
+        # install.sh refuses to restart the agent while this exists.
+        return Path(self.config.install_dir).parent / "nakomis-fleet-agent" / ".updating"
+
+    def _update(self, url: str, version: str, sha256: str | None) -> None:
         def progress(pct: int, status: str) -> None:
             self.respond({"type": "ota_progress", "progress": pct, "status": status, "version": version})
 
@@ -181,6 +234,7 @@ class Agent:
                 if self._cancel.is_set():
                     raise Cancelled()
                 progress(100, "Installing")
+                self._installing = True
                 self.releases.unpack(archive, version)
             self.releases.install(version)
             self.respond({"type": "ota_complete", "version": version})
@@ -194,6 +248,7 @@ class Agent:
             log.exception("Update to %s crashed", version)
             self.respond({"type": "ota_error", "message": f"Update failed: {err}", "version": version})
         finally:
+            self._installing = False
             self._busy.release()
 
 
@@ -218,11 +273,18 @@ def run(config: Config) -> None:  # pragma: no cover (needs a broker; exercised 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=config.thing_name)
     client.tls_set(ca_certs=config.ca_file, certfile=config.cert_file, keyfile=config.key_file,
                    tls_version=ssl.PROTOCOL_TLS_CLIENT)
-    agent = Agent(config, releases_from(config), client)
+    releases = releases_from(config)
+    recovered = releases.recover()
+    agent = Agent(config, releases, client)
 
     def on_connect(c, _userdata, _flags, reason, _props):
         log.info("Connected to %s (%s); subscribing to %s", config.endpoint, reason, agent.command_topic)
         c.subscribe(agent.command_topic, qos=1)
+        nonlocal recovered
+        if recovered:
+            # The agent died mid-install last time and has rolled back.
+            agent.respond({"type": "ota_error", "message": recovered})
+            recovered = None
         agent.announce_version()
 
     client.on_connect = on_connect

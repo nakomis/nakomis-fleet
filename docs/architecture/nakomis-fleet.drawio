@@ -1,0 +1,93 @@
+<mxGraphModel adaptiveColors="auto" dx="1200" dy="800" grid="1" gridSize="10" page="1" pageWidth="1400" pageHeight="900">
+  <root>
+    <mxCell id="0"/>
+    <mxCell id="1" parent="0"/>
+    <mxCell id="title" value="nakomis-fleet" style="text;html=1;fontSize=20;fontStyle=1;align=left;" vertex="1" parent="1">
+      <mxGeometry x="40" y="20" width="400" height="30" as="geometry"/>
+    </mxCell>
+    <mxCell id="browser" value="Browser&lt;br&gt;app.{env}/fleet&lt;br&gt;(nakomis-shell + Fleet remote)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+      <mxGeometry x="40" y="120" width="200" height="80" as="geometry"/>
+    </mxCell>
+    <mxCell id="cognito" value="Cognito (shared pool)&lt;br&gt;login.{env}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+      <mxGeometry x="40" y="280" width="200" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="httpapi" value="HTTP API (JWT)&lt;br&gt;api.fleet.{zone}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+      <mxGeometry x="340" y="90" width="180" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="wsapi" value="WebSocket API&lt;br&gt;ws.fleet.{zone}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+      <mxGeometry x="340" y="190" width="180" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="apifn" value="api Lambda&lt;br&gt;devices, OTA, commands,&lt;br&gt;wipe, firmware, promote" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+      <mxGeometry x="600" y="80" width="200" height="80" as="geometry"/>
+    </mxCell>
+    <mxCell id="ingest" value="ingest Lambda&lt;br&gt;registry + broadcast" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+      <mxGeometry x="600" y="300" width="200" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="ddb" value="DynamoDB&lt;br&gt;devices + connections" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+      <mxGeometry x="880" y="190" width="160" height="80" as="geometry"/>
+    </mxCell>
+    <mxCell id="s3" value="S3 nakomis-firmware-{env}&lt;br&gt;{Project}/{ver}/firmware.bin&lt;br&gt;or artefact.tar.gz&lt;br&gt;+ manifest.json (nakomis-infra)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+      <mxGeometry x="880" y="40" width="220" height="90" as="geometry"/>
+    </mxCell>
+    <mxCell id="iot" value="AWS IoT Core&lt;br&gt;{project}/{device}/commands&lt;br&gt;…/responses, …/status" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+      <mxGeometry x="600" y="460" width="220" height="70" as="geometry"/>
+    </mxCell>
+    <mxCell id="esp" value="ESP32 devices&lt;br&gt;(MqttOTA, BluetoothOTA)" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+      <mxGeometry x="420" y="620" width="180" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="pi" value="Raspberry Pis&lt;br&gt;(agent/: tarball releases, rollback)" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+      <mxGeometry x="820" y="620" width="200" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="e1" value="Bearer token" style="endArrow=classic;html=1;" edge="1" parent="1" source="browser" target="httpapi">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e2" value="?token=" style="endArrow=classic;html=1;" edge="1" parent="1" source="browser" target="wsapi">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e3" value="sign in" style="endArrow=classic;html=1;dashed=1;" edge="1" parent="1" source="browser" target="cognito">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e4" style="endArrow=classic;html=1;" edge="1" parent="1" source="httpapi" target="apifn">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e5" value="presign (10 min)" style="endArrow=classic;html=1;" edge="1" parent="1" source="apifn" target="s3">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e6" style="endArrow=classic;html=1;" edge="1" parent="1" source="apifn" target="ddb">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e7" value="publish */*/commands" style="endArrow=classic;html=1;" edge="1" parent="1" source="apifn" target="iot">
+      <mxGeometry relative="1" as="geometry">
+        <Array as="points">
+          <mxPoint x="560" y="400"/>
+        </Array>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="e8" value="IoT rules: responses, status" style="endArrow=classic;html=1;" edge="1" parent="1" source="iot" target="ingest">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e9" style="endArrow=classic;html=1;" edge="1" parent="1" source="ingest" target="ddb">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e10" value="post to connections" style="endArrow=classic;html=1;" edge="1" parent="1" source="ingest" target="wsapi">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e11" value="MQTT (mTLS)" style="endArrow=classic;startArrow=classic;html=1;" edge="1" parent="1" source="esp" target="iot">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e12" value="MQTT (mTLS)" style="endArrow=classic;startArrow=classic;html=1;" edge="1" parent="1" source="pi" target="iot">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e13" value="HTTPS download" style="endArrow=classic;html=1;dashed=1;" edge="1" parent="1" source="pi" target="s3">
+      <mxGeometry relative="1" as="geometry">
+        <Array as="points">
+          <mxPoint x="1160" y="650"/>
+          <mxPoint x="1160" y="85"/>
+        </Array>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="note" value="Secure tier: ota-signed devices only get signed builds (enforced in the API); ota-approval devices wait for physical approval; devices are the trust anchor." style="text;html=1;whiteSpace=wrap;fontSize=11;fontColor=#666666;" vertex="1" parent="1">
+      <mxGeometry x="40" y="740" width="700" height="40" as="geometry"/>
+    </mxCell>
+  </root>
+</mxGraphModel>
