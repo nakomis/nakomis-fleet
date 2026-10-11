@@ -21,7 +21,7 @@ sandbox, tinycrypt) currently live in the sandbox account, so the sandbox shell 
 - **`nakomis-shell`** is a Vite + `@module-federation/vite` host. It owns login, the sidebar, the MUI
   theme and routing. It shares `react`, `react-dom`, `react-router`, `@mui/material` and `@emotion/*`
   as singletons.
-- **Remotes** each expose `./App`, a component that receives a `ShellContext` prop
+- **Remotes** each expose `./App`, a component that receives `ShellContext` as its props
   (see `nakomis-shell/contract/shell-contract.ts`):
   `{ env, basePath, user, getAccessToken(), getIdToken(), getAwsCredentials(identityPoolId), signOut() }`.
   A remote renders its own `<Routes>` relative to `basePath`.
@@ -31,6 +31,10 @@ sandbox, tinycrypt) currently live in the sandbox account, so the sandbox shell 
   - `remotes/{name}/…` holds each remote's `remoteEntry.js` and assets, deployed by that remote's CI.
 - The shell fetches `/shell/remotes.json` (written by the shell's CDK per env) to decide which remotes
   appear in the sidebar. This is how the prod shell has no Sandbox panel.
+- **Remote CI** publishes with the shell's `nakomis-shell-remote-deployer-{env}` managed policy, attached to the
+  remote's own CI role, or to a `nakomis-<repo>-remote-ci-{env}` role the shell creates for repos without CDK.
+- **Stable context:** the shell memoises each remote's `ShellContext` and keys it on the user's identity, not the
+  token; remotes should still key their services on stable fields and read token getters through a ref.
 - **Departure from the plan:** there is no `@nakomis/shell-ui` npm package in CodeArtifact. The host
   passes auth, credentials and theme to remotes at runtime, which removes the need for a private npm
   registry in every CI job. CodeArtifact only hosts cargo today. Remote URLs are `/remotes/{name}/` rather
@@ -80,7 +84,11 @@ sandbox, tinycrypt) currently live in the sandbox account, so the sandbox shell 
 - **Responses** come back on `{project}/{deviceId}/responses`: `ota_progress {progress,status,version}`,
   `ota_complete {version}` and `ota_error {message}`.
 - **Today's devices never send `ota_complete`.** They reboot instead. Fleet therefore treats "the device
-  reports the target version after the update was sent" as completion.
+  reports the target version after the update was sent" as completion. The UI polls `get_version` while an
+  update is in flight, and the ingest Lambda sends `get_version` when a heartbeat arrives mid-update, so
+  completion is detected even with no Fleet tab open. Version-less `ota_progress` (URL-chunk acks) can't reopen
+  a finished update.
+- **Wipe** is only offered to devices with the `wipe` capability; no firmware implements it yet.
 
 ### Optional secure tier
 
@@ -100,9 +108,14 @@ sandbox, tinycrypt) currently live in the sandbox account, so the sandbox shell 
 
 ## Pi devices (FLEET-5)
 
-- Pi artefacts sit in the same buckets as `{Project}/{version}/artefact.tar.gz`. The manifest gains
+- Pi releases sit in the same buckets as `{Project}/{version}/artefact.tar.gz`; the manifest gains
   `artefactType: "tarball"`.
-- `nakomis-pi-agent` (in `agent/`) is a small systemd service. It subscribes to the same command topic
-  (`ota_update` with a URL), downloads the tarball, verifies its `sha256`, unpacks it into
-  `/opt/<project>/releases/<version>`, flips a `current` symlink and restarts the unit. If the health
-  check fails, it rolls back and reports `ota_error {message:"rolled back"}`.
+- The agent (`agent/`, see its README) is a systemd service that speaks the ESP32 protocol, so Fleet treats a
+  Pi like any device. Fleet adds the build's `sha256` to `ota_update` (or the last `url_chunk`), which the agent
+  requires; ESP32 firmware ignores it.
+- Install = unpack to `releases/<version>`, swap `current`, restart the unit, health-check (three `is-active`
+  checks plus an optional command); any failure rolls back and reports `ota_error {message: "rolled back"}`.
+  A pending marker lets a restarted agent finish or roll back an interrupted install.
+- **Departure from the plan:** push (Fleet sends `ota_update`) rather than the agent polling the manifest, so
+  ESP32s and Pis share one OTA path, UI and progress reporting. The agent lives in this repo rather than a
+  separate `nakomis-pi-agent`, as it shares the protocol.
