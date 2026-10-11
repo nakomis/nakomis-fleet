@@ -1,0 +1,4 @@
+# Single package; this file only holds pnpm's supply-chain settings.
+allowBuilds:
+  esbuild: true
+minimumReleaseAge: 1440
