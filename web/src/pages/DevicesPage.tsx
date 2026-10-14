@@ -115,12 +115,14 @@ export function DevicesPage() {
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                       <Box
                         component="span"
-                        aria-label={isOnline(d.lastSeen) ? 'online' : 'offline'}
+                        aria-label={isOnline(d.lastSeen, undefined, d.project) ? 'online' : 'offline'}
                         sx={{
                           width: 8,
                           height: 8,
                           borderRadius: '50%',
-                          bgcolor: isOnline(d.lastSeen) ? 'success.main' : 'text.disabled',
+                          bgcolor: isOnline(d.lastSeen, undefined, d.project)
+                            ? 'success.main'
+                            : 'text.disabled',
                           flexShrink: 0,
                         }}
                       />

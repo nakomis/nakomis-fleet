@@ -71,8 +71,12 @@ export function DevicePage() {
           <>
             <Chip
               size="small"
-              color={isOnline(device.lastSeen) ? 'success' : 'default'}
-              label={isOnline(device.lastSeen) ? 'online' : `last seen ${relativeTime(device.lastSeen)}`}
+              color={isOnline(device.lastSeen, undefined, device.project) ? 'success' : 'default'}
+              label={
+                isOnline(device.lastSeen, undefined, device.project)
+                  ? 'online'
+                  : `last seen ${relativeTime(device.lastSeen)}`
+              }
             />
             <Chip size="small" variant="outlined" label={device.project} />
             <OtaChip state={device.otaState} />

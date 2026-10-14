@@ -9,6 +9,14 @@ test('online means seen in the last 2.5 minutes', () => {
   expect(isOnline(undefined, NOW)).toBe(false);
 });
 
+test('Kata counts as online for 10 minutes: she is silent through a long pass (CHATS-13)', () => {
+  expect(isOnline(ago(6 * 60_000), NOW, 'kata')).toBe(true);
+  expect(isOnline(ago(11 * 60_000), NOW, 'kata')).toBe(false);
+  // Every other project keeps 2.5 minutes.
+  expect(isOnline(ago(6 * 60_000), NOW, 'bootboots')).toBe(false);
+  expect(isOnline(ago(6 * 60_000), NOW)).toBe(false);
+});
+
 test.each([
   [undefined, 'never'],
   [ago(-5000), 'just now'],
